@@ -43,28 +43,11 @@ error: the following build command failed with exit code 1:
 
 ## Probable cause
 
-image.zig
-```
-const all_interface_funcs = blk: {
-    const all_formats_delcs = std.meta.declarations(SupportedFormats);
-    var result: []const FormatInteraceFnType = &[0]FormatInteraceFnType{};
-    for (all_formats_delcs) |decl| {
-        const decl_value = @field(SupportedFormats, decl.name);
-        const entry_type = @TypeOf(decl_value);
-        if (entry_type == type) {
-            const entry_type_info = @typeInfo(decl_value);
-            if (entry_type_info == .@"struct") {
-                for (entry_type_info.@"struct".decls) |struct_entry| {
-                    if (std.mem.eql(u8, struct_entry.name, "formatInterface")) {
-                        result = result ++ [_]FormatInteraceFnType{
-                            @field(decl_value, struct_entry.name),
-                        };
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    break :blk result[0..];
-};
-```
+The actual cause is the self-hosted x86_64 codegen backend (src/codegen/x86_64/CodeGen.zig) cannot handle AIR instructions on types with abiSize == 0. The triggering function TGA.writeColorMap16 constructs a color.Rgb555 packed struct, which has a to ToMethods(...) = .{} field - and ToMethods(...) is just a container of declarations with no fields, i.e. zero-sized.
+During codegen for this field, a chain of unreachable / assert > 0 panics fires across many sites (isPowerOfTwo, ceilPowerOfTwo, registerAlias, genSetMem, genSetReg, select/convert pattern matching, getResolvedInstValue).
+
+Why Release passes: Release backend = LLVM, which has correct zero-size handling.
+Why Debug crashes: Debug default uses a self-hosted x86_64 backend.
+
+A full fix requires systematically adding zero-size handling at every relevant site in CodeGen.zig.
+I tried 4 local patches, and each one uncovered another unreachable further down the chain, so the cascade is deep and non-trivial.
